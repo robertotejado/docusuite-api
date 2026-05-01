@@ -102,3 +102,31 @@ def leer_documento(documento_id: int):
             raise HTTPException(status_code=404, detail="Documento no encontrado")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Añade este modelo debajo de los otros
+class DocumentoActualizar(BaseModel):
+    titulo: str
+    contenido_texto: str
+
+# Añade esta ruta al final
+@app.put("/documentos/{documento_id}")
+def actualizar_documento(documento_id: int, doc: DocumentoActualizar):
+    """Sobrescribe un documento existente"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        query = """
+            UPDATE documentos 
+            SET titulo = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP 
+            WHERE id = %s
+        """
+        cur.execute(query, (doc.titulo, doc.contenido_texto, documento_id))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"success": True, "mensaje": "Documento actualizado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
