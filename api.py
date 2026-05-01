@@ -26,6 +26,15 @@ class DocumentoActualizar(BaseModel):
     titulo: str
     contenido_texto: str
 
+class ProyectoNuevo(BaseModel):
+    usuario_id: int
+    nombre: str
+    tipo: str
+
+class ProyectoActualizar(BaseModel):
+    nombre: str
+    tipo: str
+
 # --- AUTENTICACIÓN ---
 @app.post("/login")
 def login(req: LoginRequest):
@@ -61,6 +70,54 @@ def obtener_proyectos(usuario_id: int):
         return proyectos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/proyectos")
+def crear_proyecto(proy: ProyectoNuevo):
+    """(CREATE) Guarda un proyecto nuevo"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO proyectos (nombre, tipo, usuario_id) VALUES (%s, %s, %s) RETURNING id", 
+                    (proy.nombre, proy.tipo, proy.usuario_id))
+        nuevo_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "id": nuevo_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/proyectos/{proyecto_id}")
+def actualizar_proyecto(proyecto_id: int, proy: ProyectoActualizar):
+    """(UPDATE) Modifica el nombre o tipo de un proyecto"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE proyectos SET nombre = %s, tipo = %s WHERE id = %s", 
+                    (proy.nombre, proy.tipo, proyecto_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "mensaje": "Proyecto actualizado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/proyectos/{proyecto_id}")
+def eliminar_proyecto(proyecto_id: int):
+    """(DELETE) Borra un proyecto"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        # Ojo: si borras un proyecto, asegúrate de que tu BBDD tiene "ON DELETE CASCADE" 
+        # en los documentos, o te dará error si tiene documentos dentro.
+        cur.execute("DELETE FROM proyectos WHERE id = %s", (proyecto_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "mensaje": "Proyecto eliminado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- DOCUMENTOS (CRUD COMPLETO) ---
 @app.get("/documentos/usuario/{usuario_id}")
