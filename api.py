@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 import psycopg2
 from werkzeug.security import check_password_hash
 import os
@@ -8,7 +9,7 @@ app = FastAPI(title="DocuSuite API", version="1.0")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- MODELOS DE DATOS (Lo que la API espera recibir) ---
+# --- MODELOS DE DATOS ---
 class LoginData(BaseModel):
     username: str
     password: str
@@ -17,6 +18,8 @@ class DocumentoNuevo(BaseModel):
     usuario_id: int
     titulo: str
     contenido_texto: str
+    id_proyecto: Optional[int] = None  # Opcional, por si lo usas
+    autor: Optional[str] = None        # Opcional
 
 # --- RUTAS DE LA API ---
 
@@ -43,21 +46,19 @@ def login(data: LoginData):
 
 @app.post("/documentos")
 def guardar_documento(doc: DocumentoNuevo):
-    """Guarda un nuevo documento en la base de datos"""
+    """Guarda o actualiza un documento en la base de datos"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Asumo que tus columnas se llaman usuario_id, titulo y contenido_texto.
-        # Usa RETURNING id para que Supabase nos confirme el ID del documento creado.
         query = """
-            INSERT INTO documentos (usuario_id, titulo, contenido_texto) 
-            VALUES (%s, %s, %s) RETURNING id;
+            INSERT INTO documentos (usuario_id, titulo, contenido_texto, id_proyecto, autor) 
+            VALUES (%s, %s, %s, %s, %s) RETURNING id;
         """
-        cur.execute(query, (doc.usuario_id, doc.titulo, doc.contenido_texto))
+        cur.execute(query, (doc.usuario_id, doc.titulo, doc.contenido_texto, doc.id_proyecto, doc.autor))
         nuevo_id = cur.fetchone()[0]
         
-        conn.commit() # ¡Importante! Confirma el guardado en la BD
+        conn.commit()
         cur.close()
         conn.close()
         
@@ -67,19 +68,37 @@ def guardar_documento(doc: DocumentoNuevo):
 
 @app.get("/documentos/usuario/{usuario_id}")
 def listar_documentos(usuario_id: int):
-    """Devuelve la lista de documentos de un usuario para el menú lateral"""
+    """Devuelve la lista de documentos (id, titulo y fecha) para el menú lateral"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Traemos solo lo necesario para la lista, ordenado por el más reciente
-        cur.execute("SELECT id, titulo FROM documentos WHERE usuario_id = %s ORDER BY id DESC", (usuario_id,))
+        cur.execute("SELECT id, titulo, fecha_modificacion FROM documentos WHERE usuario_id = %s ORDER BY id DESC", (usuario_id,))
         filas = cur.fetchall()
         cur.close()
         conn.close()
         
-        # Formateamos la respuesta como una lista de diccionarios
-        documentos = [{"id": fila[0], "titulo": fila[1]} for fila in filas]
+        # Formateamos la respuesta
+        documentos = [{"id": fila[0], "titulo": fila[1], "fecha": fila[2]} for fila in filas]
         return {"success": True, "documentos": documentos}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documentos/{documento_id}")
+def leer_documento(documento_id: int):
+    """Devuelve el contenido completo (HTML) de un documento específico"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        cur.execute("SELECT titulo, contenido_texto FROM documentos WHERE id = %s", (documento_id,))
+        doc = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if doc:
+            return {"success": True, "titulo": doc[0], "contenido_texto": doc[1]}
+        else:
+            raise HTTPException(status_code=404, detail="Documento no encontrado")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
