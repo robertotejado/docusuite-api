@@ -1,132 +1,147 @@
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
-import psycopg2
-from werkzeug.security import check_password_hash
-import os
 
-app = FastAPI(title="DocuSuite API", version="1.0")
+app = FastAPI(title="DocuSuite API Desktop")
 
+# Tu base de datos (Render lo inyecta automáticamente)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # --- MODELOS DE DATOS ---
-class LoginData(BaseModel):
+class LoginRequest(BaseModel):
     username: str
     password: str
 
 class DocumentoNuevo(BaseModel):
     usuario_id: int
+    id_proyecto: int
+    titulo: str
+    autor: str
+    contenido_texto: str
+
+class DocumentoActualizar(BaseModel):
+    id_proyecto: int
     titulo: str
     contenido_texto: str
-    id_proyecto: Optional[int] = None  # Opcional, por si lo usas
-    autor: Optional[str] = None        # Opcional
 
-# --- RUTAS DE LA API ---
-
-@app.get("/")
-def home():
-    return {"status": "DocuSuite API Online"}
-
+# --- AUTENTICACIÓN ---
 @app.post("/login")
-def login(data: LoginData):
+def login(req: LoginRequest):
+    """Verifica el usuario y devuelve su ID"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT id, password FROM usuarios WHERE username = %s", (data.username,))
-        user = cur.fetchone()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, password FROM usuarios WHERE username = %s", (req.username,))
+        user_data = cur.fetchone()
         cur.close()
         conn.close()
+
+        # Simplificación para la API: asume contraseña en texto plano o hash (ajusta según tu DB)
+        from werkzeug.security import check_password_hash
+        if user_data and check_password_hash(user_data['password'], req.password):
+            return {"success": True, "usuario_id": user_data["id"]}
         
-        if user and check_password_hash(user[1], data.password):
-            return {"success": True, "usuario_id": user[0]}
-        else:
-            raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/documentos")
-def guardar_documento(doc: DocumentoNuevo):
-    """Guarda o actualiza un documento en la base de datos"""
+# --- PROYECTOS ---
+@app.get("/proyectos/usuario/{usuario_id}")
+def obtener_proyectos(usuario_id: int):
+    """Devuelve la lista de proyectos de un usuario"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        
-        query = """
-            INSERT INTO documentos (usuario_id, titulo, contenido_texto, id_proyecto, autor) 
-            VALUES (%s, %s, %s, %s, %s) RETURNING id;
-        """
-        cur.execute(query, (doc.usuario_id, doc.titulo, doc.contenido_texto, doc.id_proyecto, doc.autor))
-        nuevo_id = cur.fetchone()[0]
-        
-        conn.commit()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, nombre FROM proyectos WHERE usuario_id = %s ORDER BY fecha_creacion DESC", (usuario_id,))
+        proyectos = cur.fetchall()
         cur.close()
         conn.close()
-        
-        return {"success": True, "mensaje": "Documento guardado", "documento_id": nuevo_id}
+        return proyectos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- DOCUMENTOS (CRUD COMPLETO) ---
 @app.get("/documentos/usuario/{usuario_id}")
-def listar_documentos(usuario_id: int):
-    """Devuelve la lista de documentos (id, titulo y fecha) para el menú lateral"""
+def obtener_documentos(usuario_id: int):
+    """(READ) Lista todos los documentos de un usuario"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        
-        cur.execute("SELECT id, titulo, fecha_modificacion FROM documentos WHERE usuario_id = %s ORDER BY id DESC", (usuario_id,))
-        filas = cur.fetchall()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, titulo, fecha_modificacion FROM documentos WHERE usuario_id = %s ORDER BY fecha_modificacion DESC", (usuario_id,))
+        docs = cur.fetchall()
         cur.close()
         conn.close()
-        
-        # Formateamos la respuesta
-        documentos = [{"id": fila[0], "titulo": fila[1], "fecha": fila[2]} for fila in filas]
-        return {"success": True, "documentos": documentos}
+        return docs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documentos/{documento_id}")
 def leer_documento(documento_id: int):
-    """Devuelve el contenido completo (HTML) de un documento específico"""
+    """(READ) Descarga un documento completo para el editor"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        
-        cur.execute("SELECT titulo, contenido_texto FROM documentos WHERE id = %s", (documento_id,))
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, id_proyecto, titulo, contenido_texto FROM documentos WHERE id = %s", (documento_id,))
         doc = cur.fetchone()
         cur.close()
         conn.close()
         
         if doc:
-            return {"success": True, "titulo": doc[0], "contenido_texto": doc[1]}
-        else:
-            raise HTTPException(status_code=404, detail="Documento no encontrado")
+            return doc
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Añade este modelo debajo de los otros
-class DocumentoActualizar(BaseModel):
-    titulo: str
-    contenido_texto: str
-
-# Añade esta ruta al final
-@app.put("/documentos/{documento_id}")
-def actualizar_documento(documento_id: int, doc: DocumentoActualizar):
-    """Sobrescribe un documento existente"""
+@app.post("/documentos")
+def crear_documento(doc: DocumentoNuevo):
+    """(CREATE) Guarda un documento nuevo en la base de datos"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        
         query = """
-            UPDATE documentos 
-            SET titulo = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP 
-            WHERE id = %s
+            INSERT INTO documentos (usuario_id, id_proyecto, titulo, autor, contenido_texto) 
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
         """
-        cur.execute(query, (doc.titulo, doc.contenido_texto, documento_id))
-        
+        cur.execute(query, (doc.usuario_id, doc.id_proyecto, doc.titulo, doc.autor, doc.contenido_texto))
+        nuevo_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        
+        return {"success": True, "id": nuevo_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/documentos/{documento_id}")
+def actualizar_documento(documento_id: int, doc: DocumentoActualizar):
+    """(UPDATE) Sobrescribe un documento existente"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        query = """
+            UPDATE documentos 
+            SET id_proyecto = %s, titulo = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP 
+            WHERE id = %s
+        """
+        cur.execute(query, (doc.id_proyecto, doc.titulo, doc.contenido_texto, documento_id))
+        conn.commit()
+        cur.close()
+        conn.close()
         return {"success": True, "mensaje": "Documento actualizado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+@app.delete("/documentos/{documento_id}")
+def eliminar_documento(documento_id: int):
+    """(DELETE) Borra un documento de la base de datos"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM documentos WHERE id = %s", (documento_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "mensaje": "Documento eliminado"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
