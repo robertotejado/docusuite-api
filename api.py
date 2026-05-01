@@ -56,6 +56,7 @@ def login(req: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+ 
 # --- PROYECTOS ---
 @app.get("/proyectos/usuario/{usuario_id}")
 def obtener_proyectos(usuario_id: int):
@@ -63,7 +64,8 @@ def obtener_proyectos(usuario_id: int):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, nombre FROM proyectos WHERE usuario_id = %s ORDER BY fecha_creacion DESC", (usuario_id,))
+        # ¡AQUÍ ESTÁ EL FIX! Hemos añadido "tipo" a la consulta SQL
+        cur.execute("SELECT id, nombre, tipo FROM proyectos WHERE usuario_id = %s ORDER BY fecha_creacion DESC", (usuario_id,))
         proyectos = cur.fetchall()
         cur.close()
         conn.close()
