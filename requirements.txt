@@ -3,3 +3,9 @@ uvicorn
 psycopg2-binary
 werkzeug
 pydantic
+fastapi
+uvicorn
+psycopg2-binary
+pydantic
+Werkzeug
+PyJWT
