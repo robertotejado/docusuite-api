@@ -53,6 +53,7 @@ class DocumentoNuevo(BaseModel):
 class DocumentoActualizar(BaseModel):
     id_proyecto: int
     titulo: str
+    autor: str # <--- AÑADIR ESTA LÍNEA
     contenido_texto: str
 
 class ProyectoNuevo(BaseModel):
@@ -230,7 +231,8 @@ def leer_documento(documento_id: int, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, id_proyecto, titulo, contenido_texto FROM documentos WHERE id = %s", (documento_id,))
+        # 👇 AQUÍ AÑADIMOS 'autor' en el SELECT 👇
+        cur.execute("SELECT id, id_proyecto, titulo, autor, contenido_texto FROM documentos WHERE id = %s", (documento_id,))
         doc = cur.fetchone()
         cur.close()
         conn.close()
@@ -259,8 +261,9 @@ def actualizar_documento(documento_id: int, doc: DocumentoActualizar, user_id: i
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        query = "UPDATE documentos SET id_proyecto = %s, titulo = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP WHERE id = %s"
-        cur.execute(query, (doc.id_proyecto, doc.titulo, doc.contenido_texto, documento_id))
+        # 👇 AQUÍ AÑADIMOS 'autor = %s' en la query, y 'doc.autor' en las variables 👇
+        query = "UPDATE documentos SET id_proyecto = %s, titulo = %s, autor = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP WHERE id = %s"
+        cur.execute(query, (doc.id_proyecto, doc.titulo, doc.autor, doc.contenido_texto, documento_id))
         conn.commit()
         cur.close()
         conn.close()
