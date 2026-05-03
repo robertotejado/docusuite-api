@@ -3,6 +3,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from werkzeug.security import check_password_hash, generate_password_hash # Importante para contraseñas seguras
 
 app = FastAPI(title="DocuSuite API Desktop")
 
@@ -11,6 +12,14 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # --- MODELOS DE DATOS ---
 class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class UsuarioNuevo(BaseModel):
+    username: str
+    password: str
+
+class UsuarioActualizar(BaseModel):
     username: str
     password: str
 
@@ -47,8 +56,6 @@ def login(req: LoginRequest):
         cur.close()
         conn.close()
 
-        # Simplificación para la API: asume contraseña en texto plano o hash (ajusta según tu DB)
-        from werkzeug.security import check_password_hash
         if user_data and check_password_hash(user_data['password'], req.password):
             return {"success": True, "usuario_id": user_data["id"]}
         
@@ -56,15 +63,91 @@ def login(req: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
- 
-# --- PROYECTOS ---
-@app.get("/proyectos/usuario/{usuario_id}")
-def obtener_proyectos(usuario_id: int):
-    """Devuelve la lista de proyectos de un usuario"""
+# ==========================================
+# --- USUARIOS (CRUD COMPLETO) ---
+# ==========================================
+@app.get("/usuarios")
+def obtener_usuarios():
+    """(READ) Lista todos los usuarios (ideal para el panel de Admin)"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        # ¡AQUÍ ESTÁ EL FIX! Hemos añadido "tipo" a la consulta SQL
+        cur.execute("SELECT id, username FROM usuarios ORDER BY id ASC")
+        usuarios = cur.fetchall()
+        cur.close()
+        conn.close()
+        return usuarios
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/register")
+def crear_usuario(user: UsuarioNuevo):
+    """(CREATE) Guarda un usuario nuevo con la contraseña encriptada"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Primero comprobamos si el usuario ya existe para no duplicarlo
+        cur.execute("SELECT id FROM usuarios WHERE username = %s", (user.username,))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=400, detail="El usuario ya existe")
+
+        hashed_pw = generate_password_hash(user.password)
+        cur.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s) RETURNING id", 
+                    (user.username, hashed_pw))
+        nuevo_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "id": nuevo_id, "mensaje": "Usuario creado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/usuarios/{usuario_id}")
+def actualizar_usuario(usuario_id: int, user: UsuarioActualizar):
+    """(UPDATE) Modifica el username o resetea la contraseña de un usuario"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        hashed_pw = generate_password_hash(user.password)
+        cur.execute("UPDATE usuarios SET username = %s, password = %s WHERE id = %s", 
+                    (user.username, hashed_pw, usuario_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "mensaje": "Usuario actualizado correctamente"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/usuarios/{usuario_id}")
+def eliminar_usuario(usuario_id: int):
+    """(DELETE) Borra un usuario de la base de datos"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        # Ojo: si borras un usuario, tu BBDD debe tener ON DELETE CASCADE en proyectos/documentos
+        cur.execute("DELETE FROM usuarios WHERE id = %s", (usuario_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"success": True, "mensaje": "Usuario eliminado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# --- PROYECTOS (CRUD COMPLETO) ---
+# ==========================================
+@app.get("/proyectos/usuario/{usuario_id}")
+def obtener_proyectos(usuario_id: int):
+    """(READ) Devuelve la lista de proyectos de un usuario"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT id, nombre, tipo FROM proyectos WHERE usuario_id = %s ORDER BY fecha_creacion DESC", (usuario_id,))
         proyectos = cur.fetchall()
         cur.close()
@@ -110,8 +193,6 @@ def eliminar_proyecto(proyecto_id: int):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        # Ojo: si borras un proyecto, asegúrate de que tu BBDD tiene "ON DELETE CASCADE" 
-        # en los documentos, o te dará error si tiene documentos dentro.
         cur.execute("DELETE FROM proyectos WHERE id = %s", (proyecto_id,))
         conn.commit()
         cur.close()
@@ -121,7 +202,9 @@ def eliminar_proyecto(proyecto_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================
 # --- DOCUMENTOS (CRUD COMPLETO) ---
+# ==========================================
 @app.get("/documentos/usuario/{usuario_id}")
 def obtener_documentos(usuario_id: int):
     """(READ) Lista todos los documentos de un usuario"""
