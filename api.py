@@ -1,15 +1,34 @@
 import os
-
+import jwt
+from datetime import datetime, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
-from werkzeug.security import check_password_hash, generate_password_hash # Importante para contraseñas seguras
+from werkzeug.security import check_password_hash, generate_password_hash
 
-app = FastAPI(title="DocuSuite API Desktop")
-
-# Tu base de datos (Render lo inyecta automáticamente)
+app = FastAPI(title="DocuSuite API Desktop Segura")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# --- CONFIGURACIÓN JWT ---
+SECRET_KEY = "tu_clave_super_secreta_docusuite" 
+ALGORITHM = "HS256"
+
+def crear_token(usuario_id: int):
+    caducidad = datetime.utcnow() + timedelta(hours=24) 
+    return jwt.encode({"user_id": usuario_id, "exp": caducidad}, SECRET_KEY, algorithm=ALGORITHM)
+
+def verificar_token(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Falta el Token de seguridad")
+    token = authorization.split(" ")[1]
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("user_id")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="El Token ha caducado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido o falsificado")
 
 # --- MODELOS DE DATOS ---
 class LoginRequest(BaseModel):
@@ -48,7 +67,6 @@ class ProyectoActualizar(BaseModel):
 # --- AUTENTICACIÓN ---
 @app.post("/login")
 def login(req: LoginRequest):
-    """Verifica el usuario y devuelve su ID"""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -58,7 +76,8 @@ def login(req: LoginRequest):
         conn.close()
 
         if user_data and check_password_hash(user_data['password'], req.password):
-            return {"success": True, "usuario_id": user_data["id"]}
+            token = crear_token(user_data["id"])
+            return {"success": True, "usuario_id": user_data["id"], "token": token}
         
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     except Exception as e:
@@ -68,8 +87,7 @@ def login(req: LoginRequest):
 # --- USUARIOS (CRUD COMPLETO) ---
 # ==========================================
 @app.get("/usuarios")
-def obtener_usuarios():
-    """(READ) Lista todos los usuarios (ideal para el panel de Admin)"""
+def obtener_usuarios(admin_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -82,13 +100,10 @@ def obtener_usuarios():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/register")
-def crear_usuario(user: UsuarioNuevo):
-    """(CREATE) Guarda un usuario nuevo con la contraseña encriptada"""
+def crear_usuario(user: UsuarioNuevo, admin_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        
-        # Primero comprobamos si el usuario ya existe para no duplicarlo
         cur.execute("SELECT id FROM usuarios WHERE username = %s", (user.username,))
         if cur.fetchone():
             cur.close()
@@ -109,8 +124,7 @@ def crear_usuario(user: UsuarioNuevo):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/usuarios/{usuario_id}")
-def actualizar_usuario(usuario_id: int, user: UsuarioActualizar):
-    """(UPDATE) Modifica el username o resetea la contraseña de un usuario"""
+def actualizar_usuario(usuario_id: int, user: UsuarioActualizar, admin_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -125,12 +139,10 @@ def actualizar_usuario(usuario_id: int, user: UsuarioActualizar):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/usuarios/{usuario_id}")
-def eliminar_usuario(usuario_id: int):
-    """(DELETE) Borra un usuario de la base de datos"""
+def eliminar_usuario(usuario_id: int, admin_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        # Ojo: si borras un usuario, tu BBDD debe tener ON DELETE CASCADE en proyectos/documentos
         cur.execute("DELETE FROM usuarios WHERE id = %s", (usuario_id,))
         conn.commit()
         cur.close()
@@ -139,13 +151,11 @@ def eliminar_usuario(usuario_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ==========================================
 # --- PROYECTOS (CRUD COMPLETO) ---
 # ==========================================
 @app.get("/proyectos/usuario/{usuario_id}")
-def obtener_proyectos(usuario_id: int):
-    """(READ) Devuelve la lista de proyectos de un usuario"""
+def obtener_proyectos(usuario_id: int, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -158,8 +168,7 @@ def obtener_proyectos(usuario_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/proyectos")
-def crear_proyecto(proy: ProyectoNuevo):
-    """(CREATE) Guarda un proyecto nuevo"""
+def crear_proyecto(proy: ProyectoNuevo, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -174,8 +183,7 @@ def crear_proyecto(proy: ProyectoNuevo):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/proyectos/{proyecto_id}")
-def actualizar_proyecto(proyecto_id: int, proy: ProyectoActualizar):
-    """(UPDATE) Modifica el nombre o tipo de un proyecto"""
+def actualizar_proyecto(proyecto_id: int, proy: ProyectoActualizar, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -189,8 +197,7 @@ def actualizar_proyecto(proyecto_id: int, proy: ProyectoActualizar):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/proyectos/{proyecto_id}")
-def eliminar_proyecto(proyecto_id: int):
-    """(DELETE) Borra un proyecto"""
+def eliminar_proyecto(proyecto_id: int, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -202,13 +209,11 @@ def eliminar_proyecto(proyecto_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ==========================================
 # --- DOCUMENTOS (CRUD COMPLETO) ---
 # ==========================================
 @app.get("/documentos/usuario/{usuario_id}")
-def obtener_documentos(usuario_id: int):
-    """(READ) Lista todos los documentos de un usuario"""
+def obtener_documentos(usuario_id: int, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -221,8 +226,7 @@ def obtener_documentos(usuario_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documentos/{documento_id}")
-def leer_documento(documento_id: int):
-    """(READ) Descarga un documento completo para el editor"""
+def leer_documento(documento_id: int, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -230,23 +234,17 @@ def leer_documento(documento_id: int):
         doc = cur.fetchone()
         cur.close()
         conn.close()
-        
-        if doc:
-            return doc
+        if doc: return doc
         raise HTTPException(status_code=404, detail="Documento no encontrado")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documentos")
-def crear_documento(doc: DocumentoNuevo):
-    """(CREATE) Guarda un documento nuevo en la base de datos"""
+def crear_documento(doc: DocumentoNuevo, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        query = """
-            INSERT INTO documentos (usuario_id, id_proyecto, titulo, autor, contenido_texto) 
-            VALUES (%s, %s, %s, %s, %s) RETURNING id
-        """
+        query = "INSERT INTO documentos (usuario_id, id_proyecto, titulo, autor, contenido_texto) VALUES (%s, %s, %s, %s, %s) RETURNING id"
         cur.execute(query, (doc.usuario_id, doc.id_proyecto, doc.titulo, doc.autor, doc.contenido_texto))
         nuevo_id = cur.fetchone()[0]
         conn.commit()
@@ -257,16 +255,11 @@ def crear_documento(doc: DocumentoNuevo):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/documentos/{documento_id}")
-def actualizar_documento(documento_id: int, doc: DocumentoActualizar):
-    """(UPDATE) Sobrescribe un documento existente"""
+def actualizar_documento(documento_id: int, doc: DocumentoActualizar, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        query = """
-            UPDATE documentos 
-            SET id_proyecto = %s, titulo = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP 
-            WHERE id = %s
-        """
+        query = "UPDATE documentos SET id_proyecto = %s, titulo = %s, contenido_texto = %s, fecha_modificacion = CURRENT_TIMESTAMP WHERE id = %s"
         cur.execute(query, (doc.id_proyecto, doc.titulo, doc.contenido_texto, documento_id))
         conn.commit()
         cur.close()
@@ -276,8 +269,7 @@ def actualizar_documento(documento_id: int, doc: DocumentoActualizar):
         raise HTTPException(status_code=500, detail=str(e))
         
 @app.delete("/documentos/{documento_id}")
-def eliminar_documento(documento_id: int):
-    """(DELETE) Borra un documento de la base de datos"""
+def eliminar_documento(documento_id: int, user_id: int = Depends(verificar_token)):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
